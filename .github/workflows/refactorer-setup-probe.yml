@@ -106,9 +106,10 @@ jobs:
               if len(matches) != 1 or not isinstance(matches[0].get('run'), str):
                   raise SystemExit('Missing or ambiguous native setup step: ' + name)
               step = matches[0]
-              native_env = {key: str(value).replace('${{ github.workspace }}', str(workspace))
+              expression_prefix = '$' + '{{'
+              native_env = {key: str(value).replace(expression_prefix + ' github.workspace }}', str(workspace))
                             for key, value in step.get('env', {}).items()}
-              if any('${{' in value for value in native_env.values()):
+              if any(expression_prefix in value for value in native_env.values()):
                   raise SystemExit('Unresolved native environment expression')
               script = evidence / (name.lower().replace(' ', '-') + '.sh')
               script.write_text(step['run'])
