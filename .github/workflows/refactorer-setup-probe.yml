@@ -1,4 +1,4 @@
-# Setup evidence only. Deploy separately as .github/workflows/native-setup-probe.yml.
+# Setup evidence only. Deploy as .github/workflows/refactorer-setup-probe.yml.
 # This never invokes generation, the correctness filter, or the measured campaign.
 # Its additional observation steps and YAML bootstrap cannot attest measured-job identity.
 name: Refactorer native setup probe
@@ -56,15 +56,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Checkout pinned Refactorer outside reference directory
-        uses: actions/checkout@v4
-        with:
-          repository: jbpextra/Refactorer
-          ref: ${{ env.REFACTORER_REVISION }}
-          path: .refactorer-tool
-          persist-credentials: false
-          fetch-depth: 1
-
       - name: Set up native requested Python version
         uses: actions/setup-python@v5
         with:
@@ -92,15 +83,14 @@ jobs:
           evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'native-setup-evidence'
           evidence.mkdir(exist_ok=True)
           source = workspace / 'reference'
-          tool = workspace / '.refactorer-tool'
           def head(folder):
               return subprocess.check_output(['git', '-C', str(folder), 'rev-parse', 'HEAD'], text=True).strip()
           revision = os.environ['REFERENCE_REVISION']
           if not re.fullmatch(r'[0-9a-f]{40}', revision) or head(source) != revision:
               raise SystemExit('Caller source does not match an immutable approved revision')
-          if head(tool) != os.environ['REFACTORER_REVISION']:
-              raise SystemExit('Refactorer checkout differs from its intended revision')
-          workflow = tool / '.github/workflows/refactorer.yml'
+          # Exact workflow bytes are adoption data, so this nongenerating probe
+          # needs no private-Refactorer checkout credential on its runner.
+          workflow = source / '.experiment/refactorer-workflow.yml'
           sha256 = hashlib.sha256(workflow.read_bytes()).hexdigest()
           if sha256 != os.environ['REFACTORER_WORKFLOW_SHA256']:
               raise SystemExit('Native workflow bytes differ from the recorded source')
@@ -126,7 +116,7 @@ jobs:
                             'script_sha256': hashlib.sha256(script.read_bytes()).hexdigest()})
           manifest = {'kind': 'nongenerating-native-dependency-resolution-probe',
               'native_job': native_job, 'probe_id': os.environ['PROBE_ID'],
-              'reference_revision': head(source), 'refactorer_revision': head(tool),
+              'reference_revision': head(source), 'refactorer_revision': os.environ['REFACTORER_REVISION'],
               'native_workflow_sha256': sha256, 'steps': steps,
               'native_action_references': [step['uses'] for step in native_steps if 'uses' in step],
               'actual_action_resolution_evidence': 'Retain Set up job logs with downloaded action SHAs',
