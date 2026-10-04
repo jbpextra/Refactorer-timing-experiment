@@ -1,0 +1,10 @@
+# Adoption configuration only; original Python source and ordinary tests stay intact.
+target_directory: "."
+smell_filter:
+  filter_enabled: true
+  include_names:
+    - "Cyclic Dependency"
+  include_severities:
+    - "High"
+    - "Medium"
+max_proposal_limit: 1

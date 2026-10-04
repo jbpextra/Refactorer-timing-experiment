@@ -1,0 +1,43 @@
+# Adoption-only caller for the delivered reusable workflow. No experiment broker.
+name: Refactorer native timing
+run-name: Goal26 ${{ inputs.measurement_kind }} ${{ inputs.run_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Ledger slot GH-NATIVE-r001 through r020, or SETUP-prefixed probe
+        required: true
+        type: string
+      measurement_kind:
+        description: Setup probes never consume measured slots
+        required: true
+        type: choice
+        default: setup_probe
+        options:
+          - setup_probe
+          - measured
+permissions:
+  contents: write
+  pull-requests: write
+concurrency:
+  group: goal26-native-fixed-reference
+  cancel-in-progress: false
+jobs:
+  refactorer:
+    uses: jbpextra/Refactorer/.github/workflows/refactorer.yml@7e9f667a7ff06e090b890ed293f90ab23d18c6c8
+    with:
+      refactorer_ref: 7e9f667a7ff06e090b890ed293f90ab23d18c6c8
+      python_version: "3.13"
+      config_file: refactor_configuration.yml
+      target_directory: "."
+      base_branch: main
+      max_parallel: "1"
+      artifact_retention_days: 30
+      openai_base_url: https://api.openai.com/v1
+      reasoner_model: gpt-5.6-luna
+      coder_model: gpt-5.6-luna
+      reasoner_reasoning_effort: xhigh
+      coder_reasoning_effort: none
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      REFACTORER_REPOSITORY_TOKEN: ${{ secrets.REFACTORER_REPOSITORY_TOKEN }}

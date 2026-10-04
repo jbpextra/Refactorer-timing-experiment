@@ -1,0 +1,266 @@
+# Setup evidence only. Deploy separately as .github/workflows/native-setup-probe.yml.
+# This never invokes generation, the correctness filter, or the measured campaign.
+# Its additional observation steps and YAML bootstrap cannot attest measured-job identity.
+name: Refactorer native setup probe
+run-name: Refactorer setup probe ${{ inputs.probe_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      probe_id:
+        description: Separate setup identifier; never use a measured repetition ID.
+        required: true
+        type: string
+      reference_revision:
+        description: Approved caller deployment commit, as a full immutable SHA.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  APPROVED_EXPERIMENT_REPOSITORY: jbpextra/Refactorer-timing-experiment
+  REFACTORER_REVISION: 7e9f667a7ff06e090b890ed293f90ab23d18c6c8
+  REFACTORER_WORKFLOW_SHA256: 082333925163a07dc0349af696d4ca09ae31d6dacfad716316c6ce1170f0e319
+  EXPECTED_DETECTOR_REVISION: fd75df397a70643ffab5dd91788c9721dae48157
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  resolve-native-dependencies:
+    name: Setup only (${{ matrix.native_job }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        native_job: [detect-smells, refactor-smells]
+    env:
+      NATIVE_JOB: ${{ matrix.native_job }}
+      REFERENCE_REVISION: ${{ inputs.reference_revision }}
+      PROBE_ID: ${{ inputs.probe_id }}
+    steps:
+      - name: Verify approved researcher-owned experiment repository
+        shell: bash
+        run: |
+          if [ "$GITHUB_REPOSITORY" != "$APPROVED_EXPERIMENT_REPOSITORY" ]; then
+            echo "::error::Setup probe is restricted to the explicitly approved experimental repository"
+            exit 1
+          fi
+
+      - name: Checkout approved unchanged caller source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.reference_revision }}
+          path: reference
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout pinned Refactorer outside reference directory
+        uses: actions/checkout@v4
+        with:
+          repository: jbpextra/Refactorer
+          ref: ${{ env.REFACTORER_REVISION }}
+          path: .refactorer-tool
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up native requested Python version
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Restore native scorer cache without saving or deleting cache entries
+        id: scorer-cache
+        if: matrix.native_job == 'refactor-smells'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.hf
+          key: hf-cache-${{ runner.os }}-codebert
+          restore-keys: |
+            hf-cache-${{ runner.os }}-
+
+      - name: Read bound native dependency steps using an isolated YAML bootstrap
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/probe-yaml-reader"
+          "$RUNNER_TEMP/probe-yaml-reader/bin/python" -m pip install "PyYAML==6.0.3"
+          "$RUNNER_TEMP/probe-yaml-reader/bin/python" - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          import yaml
+          workspace = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'native-setup-evidence'
+          evidence.mkdir(exist_ok=True)
+          source = workspace / 'reference'
+          tool = workspace / '.refactorer-tool'
+          def head(folder):
+              return subprocess.check_output(['git', '-C', str(folder), 'rev-parse', 'HEAD'], text=True).strip()
+          revision = os.environ['REFERENCE_REVISION']
+          if not re.fullmatch(r'[0-9a-f]{40}', revision) or head(source) != revision:
+              raise SystemExit('Caller source does not match an immutable approved revision')
+          if head(tool) != os.environ['REFACTORER_REVISION']:
+              raise SystemExit('Refactorer checkout differs from its intended revision')
+          workflow = tool / '.github/workflows/refactorer.yml'
+          sha256 = hashlib.sha256(workflow.read_bytes()).hexdigest()
+          if sha256 != os.environ['REFACTORER_WORKFLOW_SHA256']:
+              raise SystemExit('Native workflow bytes differ from the recorded source')
+          document = yaml.safe_load(workflow.read_text())
+          native_job = os.environ['NATIVE_JOB']
+          native_steps = document['jobs'][native_job]['steps']
+          wanted = ['Install dependencies']
+          if native_job == 'refactor-smells':
+              wanted.insert(0, 'Free disk space')
+          steps = []
+          for name in wanted:
+              matches = [step for step in native_steps if step.get('name') == name]
+              if len(matches) != 1 or not isinstance(matches[0].get('run'), str):
+                  raise SystemExit('Missing or ambiguous native setup step: ' + name)
+              step = matches[0]
+              native_env = {key: str(value).replace('${{ github.workspace }}', str(workspace))
+                            for key, value in step.get('env', {}).items()}
+              if any('${{' in value for value in native_env.values()):
+                  raise SystemExit('Unresolved native environment expression')
+              script = evidence / (name.lower().replace(' ', '-') + '.sh')
+              script.write_text(step['run'])
+              steps.append({'name': name, 'script': str(script), 'env': native_env,
+                            'script_sha256': hashlib.sha256(script.read_bytes()).hexdigest()})
+          manifest = {'kind': 'nongenerating-native-dependency-resolution-probe',
+              'native_job': native_job, 'probe_id': os.environ['PROBE_ID'],
+              'reference_revision': head(source), 'refactorer_revision': head(tool),
+              'native_workflow_sha256': sha256, 'steps': steps,
+              'native_action_references': [step['uses'] for step in native_steps if 'uses' in step],
+              'actual_action_resolution_evidence': 'Retain Set up job logs with downloaded action SHAs',
+              'bootstrap': 'Separate temporary venv containing PyYAML==6.0.3',
+              'limitations': ['Setup observations do not establish measured-job identity or isolation',
+                  'Mutable installations resolve here; measured jobs must retain their own resolution evidence',
+                  'No provider call, detector scan, correctness filter, or generated candidate execution']}
+          (evidence / 'derived-native-steps.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          cache = workspace / '.hf'
+          inventory = {str(path.relative_to(cache)): {'size': path.stat().st_size,
+              'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+              for path in sorted(cache.rglob('*')) if path.is_file()} if cache.exists() else {}
+          (evidence / 'scorer-cache-before.json').write_text(json.dumps(inventory, indent=2) + '\n')
+          PY
+
+      - name: Execute extracted native installation steps without provider credentials
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, subprocess
+          from datetime import datetime, timezone
+          evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'native-setup-evidence'
+          manifest = json.loads((evidence / 'derived-native-steps.json').read_text())
+          for step in manifest['steps']:
+              started = datetime.now(timezone.utc).isoformat()
+              environment = dict(os.environ, **step['env'])
+              for name in ('OPENAI_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN'):
+                  environment.pop(name, None)
+              with (evidence / (pathlib.Path(step['script']).stem + '.log')).open('w') as log:
+                  result = subprocess.run(['bash', '--noprofile', '--norc', '-e', '-o', 'pipefail', step['script']],
+                      cwd=pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'reference', env=environment,
+                      stdout=log, stderr=subprocess.STDOUT)
+              receipt = {'step': step['name'], 'exit_code': result.returncode,
+                  'started_at_utc': started, 'finished_at_utc': datetime.now(timezone.utc).isoformat()}
+              (evidence / (pathlib.Path(step['script']).stem + '.result.json')).write_text(
+                  json.dumps(receipt, indent=2) + '\n')
+              if result.returncode:
+                  raise SystemExit(result.returncode)
+          PY
+
+      - name: Export runtime inventory and unchanged ordinary test availability
+        if: always()
+        shell: bash
+        env:
+          SCORER_CACHE_HIT: ${{ steps.scorer-cache.outputs.cache-hit }}
+          SCORER_CACHE_MATCHED_KEY: ${{ steps.scorer-cache.outputs.cache-matched-key }}
+        run: |
+          python - <<'PY'
+          import hashlib, importlib.metadata, json, os, pathlib, shutil, subprocess, sys, tempfile
+          from datetime import datetime, timezone
+          workspace = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'native-setup-evidence'
+          evidence.mkdir(exist_ok=True)
+          source = workspace / 'reference'
+          def git(*args):
+              result = subprocess.run(['git', '-C', str(source), *args], text=True, capture_output=True)
+              return {'exit_code': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}
+          distributions = []
+          for item in importlib.metadata.distributions():
+              direct_url = item.read_text('direct_url.json')
+              distributions.append({'name': item.metadata['Name'], 'version': item.version,
+                  'direct_url': json.loads(direct_url) if direct_url else None})
+          distributions.sort(key=lambda item: item['name'].lower())
+          freeze = subprocess.run([sys.executable, '-m', 'pip', 'freeze', '--all'], text=True, capture_output=True)
+          (evidence / 'pip-freeze.txt').write_text(freeze.stdout)
+          (evidence / 'pip-freeze.stderr.txt').write_text(freeze.stderr)
+          names = ['README.md', 'checkout.py', 'orders.py', 'pricing.py', 'pytest.ini',
+                   'requirements-dev.txt', 'tests/test_checkout.py']
+          inventory = {name: {'size': (source / name).stat().st_size,
+              'sha256': hashlib.sha256((source / name).read_bytes()).hexdigest()}
+              for name in names if (source / name).is_file()}
+          cache = workspace / '.hf'
+          cache_inventory = {str(path.relative_to(cache)): {'size': path.stat().st_size,
+              'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+              for path in sorted(cache.rglob('*')) if path.is_file()} if cache.exists() else {}
+          (evidence / 'scorer-cache-after.json').write_text(json.dumps(cache_inventory, indent=2) + '\n')
+          pytest_command = shutil.which('pytest')
+          tests = {'status': 'pytest-unavailable', 'command_path': pytest_command,
+                   'baseline_tests_only': True, 'requirements_dev_installed_by_probe': False}
+          if pytest_command and len(inventory) == len(names):
+              with tempfile.TemporaryDirectory(prefix='native-probe-baseline-') as directory:
+                  temporary = pathlib.Path(directory)
+                  for name in names:
+                      destination = temporary / name
+                      destination.parent.mkdir(parents=True, exist_ok=True)
+                      shutil.copy2(source / name, destination)
+                  try:
+                      result = subprocess.run([pytest_command, '-q', 'tests/test_checkout.py', '-p', 'no:cacheprovider',
+                          '--junitxml=' + str(evidence / 'ordinary-tests.xml')], cwd=temporary,
+                          text=True, capture_output=True, timeout=120)
+                      (evidence / 'ordinary-tests.stdout.txt').write_text(result.stdout)
+                      (evidence / 'ordinary-tests.stderr.txt').write_text(result.stderr)
+                      tests.update(status='passed' if result.returncode == 0 else 'failed', exit_code=result.returncode)
+                  except subprocess.TimeoutExpired as error:
+                      def decoded(value):
+                          return value.decode(errors='replace') if isinstance(value, bytes) else value or ''
+                      (evidence / 'ordinary-tests.stdout.txt').write_text(decoded(error.stdout))
+                      (evidence / 'ordinary-tests.stderr.txt').write_text(decoded(error.stderr))
+                      tests.update(status='timeout', deadline_seconds=120)
+          elif len(inventory) != len(names):
+              tests.update(status='baseline-source-incomplete')
+          detector = [item for item in distributions if item['name'].lower().replace('_', '-') == 'code-quality-analyzer']
+          detector_commit = (detector[0]['direct_url'] or {}).get('vcs_info', {}).get('commit_id') if len(detector) == 1 else None
+          detector_matches = detector_commit == os.environ['EXPECTED_DETECTOR_REVISION']
+          manifest = {'kind': 'nongenerating-hosted-native-setup-observation',
+              'recorded_at_utc': datetime.now(timezone.utc).isoformat(),
+              'probe_id': os.environ['PROBE_ID'], 'native_job': os.environ['NATIVE_JOB'],
+              'github_repository': os.environ.get('GITHUB_REPOSITORY'), 'github_run_id': os.environ.get('GITHUB_RUN_ID'),
+              'github_run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+              'setup_workflow_revision': os.environ.get('GITHUB_SHA'),
+              'runner_image': {name: os.environ.get(name) for name in ('ImageOS', 'ImageVersion', 'RUNNER_OS', 'RUNNER_ARCH')},
+              'python_version': sys.version, 'python_executable': sys.executable,
+              'distributions': distributions, 'pip_freeze_exit_code': freeze.returncode,
+              'source_head': git('rev-parse', 'HEAD'), 'source_status': git('status', '--porcelain=v1'),
+              'reference_file_inventory': inventory, 'ordinary_tests': tests,
+              'expected_detector_commit': os.environ['EXPECTED_DETECTOR_REVISION'],
+              'resolved_detector_commit': detector_commit,
+              'detector_commit_matches': detector_matches if os.environ['NATIVE_JOB'] == 'detect-smells' else None,
+              'scorer_cache': {'hit': os.environ.get('SCORER_CACHE_HIT'),
+                  'matched_key': os.environ.get('SCORER_CACHE_MATCHED_KEY'), 'saved_by_probe': False},
+              'generation_calls': 0, 'metadata_calls': 0, 'correctness_filter_invoked': False,
+              'measured_campaign_entry': False, 'measured_job_identity_or_isolation_proven': False}
+          (evidence / 'runtime-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          if os.environ['NATIVE_JOB'] == 'detect-smells' and not detector_matches:
+              raise SystemExit('Resolved detector commit mismatches the intended detector pin')
+          if tests['status'] in ('failed', 'timeout', 'baseline-source-incomplete') or freeze.returncode:
+              raise SystemExit('Baseline tests or runtime inventory failed; retain setup evidence')
+          PY
+
+      - name: Retain setup manifests and installation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-setup-${{ inputs.probe_id }}-${{ matrix.native_job }}
+          path: ${{ runner.temp }}/native-setup-evidence/
+          retention-days: 30
+          if-no-files-found: error
