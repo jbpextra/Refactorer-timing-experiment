@@ -2,7 +2,7 @@
 
 import re
 
-import orders
+from order_utils import normalize_items
 import pricing
 
 
@@ -12,7 +12,7 @@ def render_receipt(order_id, items, *, member=False):
         raise ValueError("order_id must contain 1-32 ASCII letters, digits, '_' or '-'")
     if type(member) is not bool:
         raise TypeError("member must be bool")
-    lines = orders.normalize_items(items)
+    lines = normalize_items(items)
     totals = pricing.quote(lines, member=member)
     receipt = [f"Order {order_id.strip()}"]
     receipt.extend(
