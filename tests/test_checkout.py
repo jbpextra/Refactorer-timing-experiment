@@ -1,13 +1,14 @@
 import pytest
 
 import checkout
+import order_utils
 import orders
 import pricing
 
 
 def test_normalized_snapshot_and_subtotal():
     items = [[" pen ", 2, 125], ["pen", 1, 200]]
-    assert orders.normalize_items(items) == (("pen", 2, 125), ("pen", 1, 200))
+    assert order_utils.normalize_items(items) == (("pen", 2, 125), ("pen", 1, 200))
     assert orders.subtotal(items) == 450
     assert items == [[" pen ", 2, 125], ["pen", 1, 200]]
 
@@ -31,7 +32,7 @@ def test_shipping_boundary(value, shipping):
 
 
 def test_empty_order():
-    assert orders.normalize_items([]) == ()
+    assert order_utils.normalize_items([]) == ()
     assert orders.subtotal([]) == 0
     assert all(value == 0 for value in pricing.quote([], member=True).values())
 
