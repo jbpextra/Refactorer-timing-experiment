@@ -1,13 +1,13 @@
 """Integer-cent member discounts and shipping quotes."""
 
-import orders
+import order_utils
 
 
 def quote(items, *, member=False):
     """Calculate a fresh quote after validating the supplied order lines."""
     if type(member) is not bool:
         raise TypeError("member must be bool")
-    lines = orders.normalize_items(items)
+    lines = order_utils.normalize_items(items)
     subtotal_cents = sum(quantity * unit_cents for _, quantity, unit_cents in lines)
     discount_cents = subtotal_cents // 10 if member else 0
     net_cents = subtotal_cents - discount_cents
